@@ -1,0 +1,130 @@
+"use client";
+
+import { useState, useCallback, useEffect, useTransition } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
+import { ChartPanel } from "@/components/data/chart-panel";
+import { FilterBar } from "@/components/data/filter-bar";
+import { getTranslations, localeFromPath } from "@/lib/i18n";
+import type { ChartDataResponse, Indicator } from "@/types";
+
+export function IndicatorView({
+  indicator,
+  availableYears,
+}: {
+  indicator: Indicator;
+  availableYears: number[];
+}) {
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const locale = localeFromPath(pathname);
+  const t = getTranslations(locale).common;
+
+  const initialGeos = (params?.get("geo") ?? "").split(",").filter(Boolean);
+  const initialFrom = params?.get("from");
+  const initialTo = params?.get("to");
+
+  const [geographies, setGeographies] = useState<string[]>(
+    initialGeos.length > 0 ? initialGeos : ["SSM"],
+  );
+  const [yearFrom, setYearFrom] = useState<number | undefined>(
+    initialFrom ? Number(initialFrom) : undefined,
+  );
+  const [yearTo, setYearTo] = useState<number | undefined>(
+    initialTo ? Number(initialTo) : undefined,
+  );
+  const [chartData, setChartData] = useState<ChartDataResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [, startTransition] = useTransition();
+
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (
+      geographies.length > 0 &&
+      !(geographies.length === 1 && geographies[0] === "SSM")
+    ) {
+      next.set("geo", geographies.join(","));
+    }
+    if (yearFrom != null) next.set("from", String(yearFrom));
+    if (yearTo != null) next.set("to", String(yearTo));
+    const qs = next.toString();
+    const url = qs ? `${pathname}?${qs}` : pathname;
+    window.history.replaceState(null, "", url);
+  }, [geographies, yearFrom, yearTo, pathname]);
+
+  const onChange = useCallback(
+    (update: {
+      geographies?: string[];
+      yearFrom?: number;
+      yearTo?: number;
+    }) => {
+      startTransition(() => {
+        if (update.geographies !== undefined) setGeographies(update.geographies);
+        if ("yearFrom" in update) setYearFrom(update.yearFrom);
+        if ("yearTo" in update) setYearTo(update.yearTo);
+      });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({
+      indicator: indicator.slug,
+      locale,
+    });
+    if (geographies.length) params.set("geo", geographies.join(","));
+    if (yearFrom != null) params.set("from", String(yearFrom));
+    if (yearTo != null) params.set("to", String(yearTo));
+
+    setLoading(true);
+    fetch(`/api/chart-data?${params.toString()}`, {
+      signal: controller.signal,
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: ChartDataResponse | null) => setChartData(data))
+      .catch((error) => {
+        if (error.name !== "AbortError") setChartData(null);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [indicator.slug, geographies, yearFrom, yearTo, locale]);
+
+  const isComposition = indicator.shape === "composition";
+
+  const hasData =
+    chartData &&
+    ((chartData.shape === "timeseries" &&
+      (chartData.series?.length ?? 0) > 0) ||
+      (chartData.shape === "composition" &&
+        (chartData.composition?.length ?? 0) > 0));
+
+  return (
+    <>
+      <div className="mt-8">
+          <FilterBar
+            value={{ geographies, yearFrom, yearTo }}
+            availableYears={availableYears}
+            showYearRange={!isComposition}
+            onChange={onChange}
+            locale={locale}
+          />
+      </div>
+      <div className="mt-6">
+        {loading ? (
+          <div className="rounded-lg border border-ink-200 bg-white p-10 text-center text-ink-600 shadow-elev-1">
+            {t.loadingData}
+          </div>
+        ) : hasData ? (
+          <ChartPanel data={chartData!} height={420} />
+        ) : (
+          <div className="rounded-lg border border-ink-200 bg-white p-10 text-center text-ink-600 shadow-elev-1">
+            {t.noData}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
